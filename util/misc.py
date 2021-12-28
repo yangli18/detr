@@ -224,7 +224,7 @@ class MetricLogger(object):
             data_time.update(time.time() - end)
             yield obj
             iter_time.update(time.time() - end)
-            if i % print_freq == 0 or i == len(iterable) - 1:
+            if i != 0 and (i % print_freq == 0 or i == len(iterable) - 1):
                 eta_seconds = iter_time.global_avg * (len(iterable) - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
                 if torch.cuda.is_available():
@@ -299,6 +299,11 @@ class NestedTensor(object):
 
     def decompose(self):
         return self.tensors, self.mask
+
+    def pin_memory(self):
+        self.tensors = self.tensors.pin_memory()
+        self.mask = self.mask.pin_memory()
+        return self
 
     def __repr__(self):
         return str(self.tensors)

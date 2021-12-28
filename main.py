@@ -13,7 +13,8 @@ from torch.utils.data import DataLoader, DistributedSampler
 import datasets
 import util.misc as utils
 from datasets import build_dataset, get_coco_api_from_dataset
-from engine import evaluate, train_one_epoch
+from engine import evaluate, train_one_epoch, train_one_epoch_accum, train_one_epoch_batch_accum
+import engine
 from models import build_model
 
 
@@ -27,6 +28,9 @@ def get_args_parser():
     parser.add_argument('--lr_drop', default=200, type=int)
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
+    parser.add_argument('--accum_iter', default=1, type=int,
+                        help='gradient clipping max norm')
+    parser.add_argument('--train_one_epoch_func', default='train_one_epoch_accum')
 
     # Model parameters
     parser.add_argument('--frozen_weights', type=str, default=None,
@@ -94,6 +98,8 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
+    parser.add_argument('--train_img_set', default='train', type=str)
+    parser.add_argument('--data_file_client_args', default=None)
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -139,7 +145,7 @@ def main(args):
                                   weight_decay=args.weight_decay)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
-    dataset_train = build_dataset(image_set='train', args=args)
+    dataset_train = build_dataset(image_set=args.train_img_set, args=args)
     dataset_val = build_dataset(image_set='val', args=args)
 
     if args.distributed:
@@ -152,9 +158,9 @@ def main(args):
     batch_sampler_train = torch.utils.data.BatchSampler(
         sampler_train, args.batch_size, drop_last=True)
 
-    data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
+    data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train, pin_memory=True,
                                    collate_fn=utils.collate_fn, num_workers=args.num_workers)
-    data_loader_val = DataLoader(dataset_val, args.batch_size, sampler=sampler_val,
+    data_loader_val = DataLoader(dataset_val, args.batch_size, sampler=sampler_val, pin_memory=True,
                                  drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers)
 
     if args.dataset_file == "coco_panoptic":
@@ -188,14 +194,15 @@ def main(args):
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
 
+    train_one_epoch_func = getattr(engine, args.train_one_epoch_func)
     print("Start training")
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
-        train_stats = train_one_epoch(
+        train_stats = train_one_epoch_func(
             model, criterion, data_loader_train, optimizer, device, epoch,
-            args.clip_max_norm)
+            args.clip_max_norm, args.accum_iter)
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']

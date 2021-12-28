@@ -30,6 +30,84 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         return img, target
 
 
+from torchvision.datasets import VisionDataset
+import mmcv
+from PIL import Image
+import os
+import io
+
+class CocoDetectionBackend(VisionDataset):
+    """`MS Coco Detection <http://mscoco.org/dataset/#detections-challenge2016>`_ Dataset.
+
+    Args:
+        root (string): Root directory where images are downloaded to.
+        annFile (string): Path to json annotation file.
+        transform (callable, optional): A function/transform that  takes in an PIL image
+            and returns a transformed version. E.g, ``transforms.ToTensor``
+        target_transform (callable, optional): A function/transform that takes in the
+            target and transforms it.
+        transforms (callable, optional): A function/transform that takes input sample and its target as entry
+            and returns a transformed version.
+    """
+
+    def __init__(self, root, annFile, transform=None, target_transform=None, transforms=None, data_file_client_args=None):
+        super(CocoDetectionBackend, self).__init__(root, transforms, transform, target_transform)
+        from pycocotools.coco import COCO
+        self.coco = COCO(annFile)
+        self.ids = list(sorted(self.coco.imgs.keys()))
+
+        if data_file_client_args:
+            self.file_client = mmcv.FileClient(**data_file_client_args)
+        else:
+            self.file_client = None
+
+    def __getitem__(self, index):
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: Tuple (image, target). target is the object returned by ``coco.loadAnns``.
+        """
+        coco = self.coco
+        img_id = self.ids[index]
+        ann_ids = coco.getAnnIds(imgIds=img_id)
+        target = coco.loadAnns(ann_ids)
+
+        path = coco.loadImgs(img_id)[0]['file_name']
+
+        if self.file_client:
+            img_bytes = self.file_client.get(os.path.join(self.root, path))
+            buff = io.BytesIO(img_bytes)
+            img = Image.open(buff).convert('RGB')
+        else:
+            img = Image.open(os.path.join(self.root, path)).convert('RGB')
+
+        if self.transforms is not None:
+            img, target = self.transforms(img, target)
+
+        return img, target
+
+    def __len__(self):
+        return len(self.ids)
+
+
+class CocoDetectionClient(CocoDetectionBackend):
+    def __init__(self, img_folder, ann_file, transforms, return_masks, data_file_client_args):
+        super().__init__(img_folder, ann_file, data_file_client_args=data_file_client_args)
+        self._transforms = transforms
+        self.prepare = ConvertCocoPolysToMask(return_masks)
+
+    def __getitem__(self, idx):
+        img, target = super().__getitem__(idx)
+        image_id = self.ids[idx]
+        target = {'image_id': image_id, 'annotations': target}
+        img, target = self.prepare(img, target)
+        if self._transforms is not None:
+            img, target = self._transforms(img, target)
+        return img, target
+
+
 def convert_coco_poly_to_mask(segmentations, height, width):
     masks = []
     for polygons in segmentations:
@@ -121,7 +199,7 @@ def make_coco_transforms(image_set):
 
     scales = [480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800]
 
-    if image_set == 'train':
+    if image_set.split('_')[0] == 'train':
         return T.Compose([
             T.RandomHorizontalFlip(),
             T.RandomSelect(
@@ -151,8 +229,16 @@ def build(image_set, args):
     PATHS = {
         "train": (root / "train2017", root / "annotations" / f'{mode}_train2017.json'),
         "val": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
+        "train_gref": (root / "train2017", root / "annotations" / f'{mode}_train2017_gref.json'),
+        "train_grefg": (root / "train2017", root / "annotations" / f'{mode}_train2017_grefg.json'),
+        "train_grefumd": (root / "train2017", root / "annotations" / f'{mode}_train2017_grefumd.json'),
+        "train_unc": (root / "train2017", root / "annotations" / f'{mode}_train2017_unc.json'),
     }
 
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=args.masks)
+    if args.data_file_client_args:
+        dataset = CocoDetectionClient(img_folder, ann_file, transforms=make_coco_transforms(image_set),
+                                      return_masks=args.masks, data_file_client_args=args.data_file_client_args)
+    else:
+        dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=args.masks)
     return dataset
