@@ -17,6 +17,7 @@ from engine import evaluate, train_one_epoch, train_one_epoch_accum, train_one_e
 import engine
 from models import build_model
 
+from util.config import Config
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
@@ -105,6 +106,9 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+
+    # configuration file
+    parser.add_argument('--config', type=str, help='Path to the configure file.')
     return parser
 
 
@@ -250,6 +254,9 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DETR training and evaluation script', parents=[get_args_parser()])
     args = parser.parse_args()
+    if args.config:
+        cfg = Config(args.config)
+        cfg.merge_to_args(args)
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
